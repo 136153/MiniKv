@@ -72,6 +72,8 @@ void Server::handle_client(int client_fd) {
 
         cout << "client says:" << buffer << endl;
 
+        cout << "read 返回值为"  << n << endl;
+
         string line(buffer);
         stringstream ss(line);
 
@@ -90,6 +92,7 @@ void Server::handle_client(int client_fd) {
         } else  if (ss >> temp) {
             string response = "Usage SET <KEY> <VAL>\n";
             write(client_fd, response.c_str(), response.size());
+            shutdown(client_fd, SHUT_WR);
         }else {
             store_.set(key, val);
             string response = "OK\n";
