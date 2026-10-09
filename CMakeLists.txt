@@ -15,3 +15,27 @@ add_executable(mini-kv
     src/thread_pool.cpp
 )
 
+# =========================
+# GoogleTest
+# =========================
+
+enable_testing()
+
+find_package(GTest REQUIRED)
+
+add_executable(kv_store_test
+    test/kv_store_test.cpp
+    src/kv_store.cpp
+)
+
+target_include_directories(kv_store_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(kv_store_test
+    GTest::gtest_main
+)
+
+include(GoogleTest)
+
+gtest_discover_tests(kv_store_test)
