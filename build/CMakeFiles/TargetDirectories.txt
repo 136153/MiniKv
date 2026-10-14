@@ -1,3 +1,0 @@
-/home/mit/projects/mini-kv/build/CMakeFiles/mini-kv.dir
-/home/mit/projects/mini-kv/build/CMakeFiles/edit_cache.dir
-/home/mit/projects/mini-kv/build/CMakeFiles/rebuild_cache.dir
