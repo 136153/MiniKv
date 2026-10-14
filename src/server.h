@@ -32,4 +32,5 @@ private:
     mutex mtx_;
 
     void handle_client(int client_fd);
+    string execute_command(const string& line);
 };

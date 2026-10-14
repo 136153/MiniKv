@@ -1,5 +1,27 @@
 #include "server.h"
 
+namespace {
+    bool send_all(int fd, const string& response) {
+        size_t sent = 0;
+
+        while (sent < response.size()) {
+            ssize_t n = ::send(
+                fd,
+                response.data() + sent,
+                response.size() - sent,
+                MSG_NOSIGNAL
+            );
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            if (n <= 0) {
+                return false;
+            }
+            sent += static_cast<size_t>(n);
+        }
+        return true;
+    }
+}
 
 Server::Server(size_t worker_num) : store_(), pool_(worker_num) {}
 
@@ -63,90 +85,137 @@ void Server::start() {
 }
 
 void Server::handle_client(int client_fd) {
-        char buffer[1024];
+    // 局部资源守卫：函数返回或抛出异常时，自动关闭连接。
+    struct SocketGuard {
+        int fd;
+
+        ~SocketGuard() {
+            ::close(fd);
+        }
+    };
+
+    SocketGuard guard{client_fd};
+
+    char buffer[1024];
+    std::string pending;
+
+    // 限制一条命令的长度，避免未结束的命令无限占用内存。
+    constexpr size_t max_command_size = 8192;
+
+    while (true) {
+        ssize_t n = ::read(client_fd, buffer, sizeof(buffer));
+
+        if (n == 0) {
+            // 对端关闭连接。
+            return;
+        }
+
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+
+            perror("read");
+            return;
+        }
+
+        // 按实际读取长度追加，不需要添加 '\0'。
+        pending.append(buffer, static_cast<size_t>(n));
+
         while (true) {
-    ssize_t n = read(client_fd, buffer, sizeof(buffer) - 1);
+            size_t pos = pending.find('\n');
 
-    if (n > 0) {
-        buffer[n] = '\0';
+            if (pos == std::string::npos) {
+                break;
+            }
 
-        cout << "client says:" << buffer << endl;
+            if (pos > max_command_size) {
+                send_all(client_fd, "ERROR Command too long\n");
+                return;
+            }
 
-        cout << "read 返回值为"  << n << endl;
+            std::string line = pending.substr(0, pos);
+            pending.erase(0, pos + 1);
 
-        string line(buffer);
-        stringstream ss(line);
+            // 兼容客户端发送的 "\r\n"。
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
 
-        string command;
-        ss >> command;
+            std::string response = execute_command(line);
 
-        if (command == "SET") {
-            unique_lock<mutex> lock(mtx_);
-            string key;
-            string val;
-            string temp;
-            
-        if (!(ss >> key >> val)) {
-            string response = "Usage SET <KEY> <VAL>\n";
-            write(client_fd, response.c_str(), response.size());
-        } else  if (ss >> temp) {
-            string response = "Usage SET <KEY> <VAL>\n";
-            write(client_fd, response.c_str(), response.size());
-            shutdown(client_fd, SHUT_WR);
-        }else {
-            store_.set(key, val);
-            string response = "OK\n";
-            write(client_fd, response.c_str(), response.size());
-        }
-        }
-
-        if (command == "DEL") {
-            unique_lock<mutex> lock(mtx_);
-            string key;
-            string temp;
-            if (!(ss >> key)) {
-                string response = "Usage SET <KEY> <VAL>\n";
-                write(client_fd, response.c_str(), response.size());
-            } else if (ss >> temp) {
-                string response = "Usage SET <KEY> <VAL>\n";
-                write(client_fd, response.c_str(), response.size());
-            } else {
-                store_.del(key);
-                string response = "OK\n";
-                write(client_fd, response.c_str(), response.size());
+            if (!send_all(client_fd, response)) {
+                return;
             }
         }
 
-        if (command == "GET") {
-            unique_lock<mutex> lock(mtx_);
-            string key;
-            string val;
-            string temp;
-
-            if (!(ss >> key)) {
-                string response = "Usage SET <KEY> <VAL>\n";
-                write(client_fd, response.c_str(), response.size());
-            } else if(ss >> temp) {
-                string response = "Usage SET <KEY> <VAL>\n";
-                write(client_fd, response.c_str(), response.size());
-            } else {
-                if (store_.get(key, val)) {
-
-                string response1 = val + "\n";
-                write(client_fd, response1.c_str(), response1.size());
-                string response = "OK\n";
-                write(client_fd, response.c_str(), response.size());
-                } else {
-                    string response = "no such name\n";
-                    write(client_fd, response.c_str(), response.size());
-                }
-                
-            }
+        // 检查尚未遇到换行的那部分数据。
+        if (pending.size() > max_command_size) {
+            send_all(client_fd, "ERROR Command too long\n");
+            return;
         }
-
     }
 }
 
-    //write(client_fd, buffer, n);
-    close(client_fd);
+string Server::execute_command(const string& line) {
+    std::istringstream ss(line);
+    std::string command;
+    ss >> command;
+
+    if (command == "SET") {
+        std::string key;
+        std::string value;
+        std::string extra;
+
+        if (!(ss >> key >> value) || (ss >> extra)) {
+            return "ERROR Usage: SET <KEY> <VAL>\n";
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            store_.set(key, value);
+        }
+
+        return "OK\n";
+    }
+
+    if (command == "GET") {
+        std::string key;
+        std::string value;
+        std::string extra;
+
+        if (!(ss >> key) || (ss >> extra)) {
+            return "ERROR Usage: GET <KEY>\n";
+        }
+
+        bool found;
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            found = store_.get(key, value);
+        }
+
+        if (found) {
+            return value + "\n";
+        }
+
+        return "NOT_FOUND\n";
+    }
+
+    if (command == "DEL") {
+        std::string key;
+        std::string extra;
+
+        if (!(ss >> key) || (ss >> extra)) {
+            return "ERROR Usage: DEL <KEY>\n";
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            store_.del(key);
+        }
+
+        return "OK\n";
+    }
+
+    return "ERROR Unknown command\n";
 }
