@@ -85,6 +85,16 @@ void Server::start() {
 }
 
 void Server::handle_client(int client_fd) {
+
+    timeval timeout{};
+    timeout.tv_sec = 30;
+    timeout.tv_usec = 0;
+
+    if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1) {
+        perror("setsockopt SO_RCVTIMEO");
+        return;
+    }
+
     // 局部资源守卫：函数返回或抛出异常时，自动关闭连接。
     struct SocketGuard {
         int fd;
@@ -113,6 +123,11 @@ void Server::handle_client(int client_fd) {
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
+            }
+
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                cerr << "client idle timeout" << endl;
+                return;
             }
 
             perror("read");
