@@ -10,7 +10,7 @@ bool KVStore::del(const string& key) {
 
 bool KVStore::get(const string& key, string& val) {
     auto it = data_.find(key);
-    if (it == nullptr) {
+    if (it == data_.end()) {
         return false;
     } else {
         val = it -> second; 

@@ -16,7 +16,7 @@ public:
     ThreadPool(size_t num_threads);
     ~ThreadPool();
 
-    void equeue(function<void()> task);
+    bool equeue(function<void()> task);
     void stop();
 private:
     void worker_loop();
@@ -26,4 +26,5 @@ private:
     condition_variable cv_;
     queue<function<void()>> tasks_;
     bool stopping = false;
+    int max_queue_size_ = 16;
 };

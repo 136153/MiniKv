@@ -1,4 +1,5 @@
 #include "server.h"
+#include <poll.h>
 
 namespace {
     bool send_all(int fd, const string& response) {
@@ -23,9 +24,9 @@ namespace {
     }
 }
 
-Server::Server(size_t worker_num) : store_(), pool_(worker_num) {}
+Server::Server(size_t worker_num) : pool_(worker_num) {}
 
-void Server::start() {
+void Server::start(const volatile std::sig_atomic_t* stop_requested) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     
     if (server_fd == -1) {
@@ -47,44 +48,77 @@ void Server::start() {
     cout << "bind success" << endl;
 
     if (listen(server_fd, 10) == -1) {
-        perror("lisen");
+        perror("listen");
         close(server_fd);
         return;
     }
     cout << "MiniKv listening on 127.0.0.1:6379" << endl;
 
-    while (true) {
+    while (!*stop_requested) {
+        pollfd pfd{};
+        pfd.fd = server_fd;
+        pfd.events = POLLIN;
 
-    int client_fd = accept(server_fd, nullptr, nullptr);
+        int result = ::poll(&pfd, 1, 500);
 
-    if (client_fd == -1) {
-        perror("accept");
-        continue;
-    }
+        if (result < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("poll");
+            break;
+        }
+
+        if (result == 0) {
+            continue; // 500ms 后循环检查 Ctrl+C 标志
+        }
+
+        if (pfd.revents & POLLIN) {
+            int client_fd = accept(server_fd, nullptr, nullptr);
+            if (client_fd == -1) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                perror("accept");
+                continue;
+            }
     
-    try
-    {
-        pool_.equeue([this, client_fd]() {
-            handle_client(client_fd);
+        try
+        {
+            if (!pool_.equeue([this, client_fd]() {
+                handle_client(client_fd);
             
-        });
+            })) {
+                std::cerr << "thread pool queue is full or stopped\n";
+                close(client_fd);
+            }
+        }
+        catch(const std::exception& e)
+        {
+            std::cerr << e.what() << '\n';
+            close(client_fd);
+        }
     }
-    catch(const std::exception& e)
-    {
-        std::cerr << e.what() << '\n';
-        close(client_fd);
-    }
-    
-
-    cout << "client connected..." << endl;
 
 
 }
     close(server_fd);
+    pool_.stop();
+    std::cout << "server stopped\n";
     
 }
 
 void Server::handle_client(int client_fd) {
+// 局部资源守卫：函数返回或抛出异常时，自动关闭连接。
+        struct SocketGuard {
+        int fd;
+
+        ~SocketGuard() {
+            ::close(fd);
+        }
+    };
+
+    SocketGuard guard{client_fd};
 
     timeval timeout{};
     timeout.tv_sec = 30;
@@ -94,17 +128,6 @@ void Server::handle_client(int client_fd) {
         perror("setsockopt SO_RCVTIMEO");
         return;
     }
-
-    // 局部资源守卫：函数返回或抛出异常时，自动关闭连接。
-    struct SocketGuard {
-        int fd;
-
-        ~SocketGuard() {
-            ::close(fd);
-        }
-    };
-
-    SocketGuard guard{client_fd};
 
     char buffer[1024];
     std::string pending;

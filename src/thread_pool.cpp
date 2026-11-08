@@ -19,16 +19,18 @@ ThreadPool::~ThreadPool() {
     stop();
 }
 
-void ThreadPool::equeue(function<void()> task) {
+bool ThreadPool::equeue(function<void()> task) {
     {
     lock_guard<mutex> lock(mtx_);
-
-    if (stopping) {
-        throw runtime_error("this pool is stopped");
+    
+    if (stopping || tasks_.size() > max_queue_size_) {
+        
+        return false;
     }
     tasks_.push(move(task));
     }
     cv_.notify_one();
+    return true;
 }
 
 void ThreadPool::worker_loop() {
